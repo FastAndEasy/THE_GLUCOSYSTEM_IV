@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <sys/select.h>
 #include <errno.h>
+#include <string.h>
 #define PARSE_TIME_INTERVAL 5
 
 double glucAdd[25] = {3,6,9,12,16,18,21,24,27,30,33,36,40,40,40,40,40,40,40,40,40,40,40,40,40};
@@ -16,11 +17,16 @@ double glucBase = 80;
 double glucagonBase = 25;
 double bloodInsulinBase = 10;
 double glucose;
+double piorGlucose;
 double glucagon;
 double bloodInsulin;
+double infuseInsulin;
+double restInsulin;
+double mutiplier;
 int foodRequestFlag;
 int foodRequestEnableFlag;
 int foodRequestAcceptFlag;
+int emgFlag;
 int digestTime;
 struct timeEmulate {
     int hour;
@@ -29,12 +35,22 @@ struct timeEmulate {
 struct timeEmulate time;//
 void initial(void){
 	glucose = glucoseBase;
+    piorGlucose = glucose;
 	glucagon = glucagonBase;
 	bloodInsulin = bloodInsulinBase;
-	foodRequestAcceptFlag = 0;
+    infuseInsulin = 0;
+    restInsulin = 30;
+    mutiplier = 0.02 / 12;
 	foodRequestFlag = 0;
 	foodRequestEnableFlag = 0;
 	foodRequestAcceptFlag = 0;
+    emgFlag = 0;
+    updateOnParse("GlucoseLevel", glucose);
+    updateOnParse("Glucocon", glucagon);
+    updateOnParse("InfuseInsulin", infuseInsulin);
+    updateOnParse("FoodRequestFlag", foodRequestFlag);
+    updateOnParse("FoodRequestEnableFlag", foodRequestEnableFlag);
+    updateOnParse("RequestAcceptFlag", foodRequestAcceptFlag);
 }
 
 void updateOnParse(const char *column, int value)
@@ -53,12 +69,22 @@ void updateOnParse(const char *column, int value)
 
 
 void statesCallback(ParseClient client, int error, const char *buffer) {
-	int i, j, tmpRequestFlag, tmpAcceptFlag;
+	int i, j, tmpRequestFlag, tmpAcceptFlag, tmpEmgFlag;
 	if (error == 0 && buffer != NULL) {
-		printf("received push: '%s'\n", buffer);
+		//printf("received push: '%s'\n", buffer);
 		char *tmpBuffer;
 		tmpBuffer = (char*) buffer;//change tmp from buffer
-		for(i = 0, j = 0; *(tmpBuffer + i) != '\0'; i++){
+		
+        char *tmpText;
+        tmpText = strstr(tmpBuffer, "FoodRequestFlag");
+        tmpRequestFlag = *(tmpText + 15 + 1) - 48;
+        tmpText = strstr(tmpBuffer, "RequestAcceptFlag");
+        tmpRequestFlag = *(tmpText + 17 + 1) - 48;
+        tmpText = strstr(tmpBuffer, "EmgFlag");
+        tmpEmgFlag = *(tmpText + 7 + 1) - 48;
+        
+        /*
+        for(i = 0, j = 0; *(tmpBuffer + i) != '\0'; i++){
 			if(*(tmpBuffer + i) == '"'){
 				j++;
 				if(j == 4){
@@ -70,6 +96,10 @@ void statesCallback(ParseClient client, int error, const char *buffer) {
 			
 			}
 		}
+        */
+        if (tmpEmgFlag == 0 && emgFlag == 1) {
+            initial();
+        }
 		if(foodRequestEnableFlag == 1 && tmpRequestFlag == 1){
 			foodRequestFlag = 1;
 			foodRequestEnableFlag = 0;
@@ -87,37 +117,6 @@ void *updateByParse(void){
 		parseSendRequest(client, "GET", "/1/classes/patient/ofeFERPC8s", NULL, statesCallback);
 		sleep(1);
 	}
-}
-
-void requestCallback(ParseClient client, int error, const char *buffer)
-{
-	int tmp;
-	if (error == 0 && buffer != NULL) {
-		tmp = (char)*(buffer + 19) - 48;
-		if(foodRequestEnableFlag == 1 && tmp == 1){
-			foodRequestFlag = 1;
-			foodRequestEnableFlag = 0;
-		}
-		//printf("push: %d\n", bulb.health);
-		//updateOnParse("Health", bulb.health);
-	}
-}
-
-void *threadPushNotifications()
-{
-    pthread_detach(pthread_self());
-    ParseClient client = parseInitialize("cpeO9iWiYi6v5PDXfes8FgCyzNrqraRj06Op4k3s", "syPYZyZDh0VZSyY66eOQhXdmGNCCwN3w6bBnlrXi");
-    char *installationId = parseGetInstallationId(client);
-    
-    /* We need to set the InstallationId forcefully. Setting installationId to dataUUID based on null string is incorrect
-     logic as there is a possibility that the installationId was previously set to some junk value.
-     Typically this will break the push notification subscription */
-    parseSetInstallationId(client, dataUUID);
-    printf("lightbulb::threadPushNotifications():New Installation ID set to : %s\n", installationId);
-    printf("lightbulb::threadPushNotifications():Installation ID is : %s\n", installationId);
-    parseSetPushCallback(client, requestCallback);
-    parseStartPushService(client);
-    parseRunPushLoop(client);
 }
 
 void *updateTime(void *time)
@@ -161,11 +160,10 @@ void BloodChange(void){//(int foodRequestFlag, int foodRequestAcceptFlag){
 			glucose = glucose--;
 			glucagon = constant1 / glucose;
 			foodRequestCounter ++;
+            updateOnParse("GlucoseLevel", glucose);
+            updateOnParse("Glucocon", glucagon);
 		}
-		if(glucose < 75){
-			printf("hungry\n");//sending notification to the doctor's APP
-		}
-		if(foodRequestAcceptFlag == 1 && glucose > 70){
+		else if(foodRequestAcceptFlag == 1 && glucose > 70){
 			//digestTime
 			for(digestTime = 0; digestTime < 25; digestTime = digestTime + 5){
 				priorGlucose = glucose;
@@ -180,35 +178,80 @@ void BloodChange(void){//(int foodRequestFlag, int foodRequestAcceptFlag){
 				}
 				glucagon = constant1 / glucose;
 				bloodInsulin = bloodInsulin + ((glucose - priorGlucose) *invSeverity);
+                totalInsulin = bloodInsulin + infuseInsulin;
+                updateOnParse("GlucoseLevel", glucose);
+                updateOnParse("Glucocon", glucagon);
 				sleep(1);
 			}
 			foodRequestFlag = 0;
 			foodRequestAcceptFlag = 0;
 			updateOnParse("FoodRequestFlag", foodRequestFlag);
-			updateOnParse("RequestAcceptFlag", foodRequestFlag);//update on parse
+			updateOnParse("RequestAcceptFlag", foodRequestAcceptFlag);//update on parse
 		}
+        foodRequestEnableFlag = 0;
+        updateOnParse("FoodRequestEnableFlag", foodRequestEnableFlag);
 		if(glucose < 70){
-			printf("initial");//send another warning msg
-			initial();
+            updateOnParse("EmgFlag", 1);
+            emgFlag = 1;
 		}
 	}
 }
 
-void *updateBase(void){
-	int piorMin == 0;
+void *updateBase(void *a){
+	int piorHour == 0;
 	while(1){
-		if((time.hour == 7 && time.min == 0) || (time.hour == 12 && time.min == 0) || (time.hour == 18 && time.min == 0)){//timing condition
-			//send notification
-			if(piorMin == 55){//at the beginning of the food time
-				foodRequestEnableFlag = 1;
-			}
+        if (emgFlag == 0) {
+            if(foodRequestEnableFlag == 1 || foodRequestFlag == 1)){
+                BloodChange();
+            }
+        }
+        /*
+        if(foodRequestEnableFlag == 1 || foodRequestFlag == 1)){
 			BloodChange();
 		}
-		piorMin = time.min;
+         */
+        sleep(1);
 	}
+}
+
+void *updateInsulin(void *a){
+    while (1) {
+        if (emgFlag == 0) {
+            infuseInsulin = (1/12) * mutiplier * (glucose - 60);
+            updateOnParse("InfuseInsulin", infuseInsulin);
+            if (restInsulin <= 0) {
+                emgFlag = 1;
+            }
+            restInsulin = restInsulin - infuseInsulin;
+            if (glucose > 110) {
+                if ((glucose / piorGlucose) > 0.9875) {
+                    mutiplier += 0.01 / 12;
+                }
+            }
+            else{
+                mutiplier = 0.02 / 12;
+            }
+            piorGlucose = glucose;
+        }
+        /*
+        infuseInsulin = (1/12) * mutiplier * (glucose - 60);
+        updateOnParse("InfuseInsulin", infuseInsulin);
+        if (glucose > 110) {
+            if ((glucose / piorGlucose) > 0.9875) {
+                mutiplier += 0.01 / 12;
+            }
+        }
+        else{
+            mutiplier = 0.02 / 12;
+        }
+        piorGlucose = glucose;
+         */
+        sleep(1);
+    }
 }
 
 int main(void){
+    int piorHour == 0;
 	time.hour = 0;
 	time.min = 0;
 	initial();
@@ -216,11 +259,30 @@ int main(void){
     pthread_mutex_init(&lock, NULL);
 	pthread_mutex_lock(&lock);
     pthread_mutex_unlock(&lock);
-	pthread_create(&threadPush, NULL, threadPushNotifications, NULL);
+	//pthread_create(&threadPush, NULL, threadPushNotifications, NULL);
+    pthread_create(&threadInsulin, NULL, updateInsulin, NULL);
     pthread_create(&threadTime, NULL, updateTime, &time);
 	pthread_create(&threadUpdateBase, NULL, updateBase, NULL);
 	pthread_create(&threadUpdateByParse, NULL, updateByParse, NULL);
-	
+    while(1){
+        if((time.hour == 7 && time.min == 0) || (time.hour == 12 && time.min == 0) || (time.hour == 18 && time.min == 0)){//timing condition
+            //send notification
+            if (emgFlag == 0) {
+                if(piorHour < time.hour){//at the beginning of the food time
+                    foodRequestEnableFlag = 1;
+                    updateOnParse("FoodRequestEnableFlag", foodRequestEnableFlag);
+                }
+            }
+            /*
+            if(piorHour < time.hour){//at the beginning of the food time
+                foodRequestEnableFlag = 1;
+                updateOnParse("FoodRequestEnableFlag", foodRequestEnableFlag);
+            }
+             */
+        }
+        piorHour = time.hour;
+        sleep(1);
+    }
 }
 
 
